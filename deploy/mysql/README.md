@@ -5,9 +5,12 @@ MySQL 容器首次启动时，会按文件名顺序执行挂载到 `/docker-entr
 | 执行顺序 | 容器内文件名 | 源文件 | 作用 |
 | --- | --- | --- | --- |
 | 1 | `01-init.sql` | `init.sql` | 建库建表、沙箱库与账号、班级/用户/示例题等基础种子 |
-| 2 | `02-problems.sql` | `leetcode-problems-full.sql` | LeetCode SQL 题库（73 题，含 init_sql 与参考答案）与测试用例 |
+| 2 | `02-problems.sql` | `02-problems.sql` | `170fcbc` 版本完整 SQL 题库（323 题）与测试用例；替换基础示例题 |
+| 3 | `03-session-version-upgrade.sql` | `session-version-upgrade.sql` | 补齐会话版本字段 |
 
-`leetcode-problems-full.sql` 以题目 id 段 1001–1073 幂等写入 `problem` 与 `problem_testcase`，不会影响 `init.sql` 的示例题（101–104）。
+全新数据库最终共有 323 道 SQL 题，题目 id 为 `1–323`。
+
+`02-problems.sql` 来自提交 `170fcbc`，会先清空 `init.sql` 的 4 道基础示例题，再写入完整的 323 道题。`leetcode-problems-full.sql` 中的 73 道题均已包含在这 323 道题中，因此不再挂载到初始化目录，避免同一道题以不同 id 重复出现。
 
 重新初始化：
 

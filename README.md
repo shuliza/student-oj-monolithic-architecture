@@ -86,6 +86,18 @@ docker compose up -d --build
 docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
 ```
 
+生产部署需要将浏览器实际访问的 HTTPS 域名加入后端 CORS 白名单。生产加固配置默认允许 `https://imsteven.cloud` 与 `https://www.imsteven.cloud`；使用其他域名时，在 `.env` 中设置逗号分隔的来源（必须包含协议，不能包含路径）：
+
+```dotenv
+STUDENTOJ_CORS_ALLOWED_ORIGINS=https://oj.example.com,https://www.oj.example.com
+```
+
+生产环境启动命令：
+
+```bash
+docker compose -f docker-compose.yml -f deploy/production/docker-compose.hardening.yml up -d --build
+```
+
 访问：
 
 ```text

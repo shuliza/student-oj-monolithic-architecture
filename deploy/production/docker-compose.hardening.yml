@@ -23,6 +23,7 @@ services:
       TZ: Asia/Shanghai
       JAVA_TOOL_OPTIONS: -Duser.timezone=Asia/Shanghai
       SPRING_PROFILES_ACTIVE: prod
+      STUDENTOJ_CORS_ALLOWED_ORIGINS: ${STUDENTOJ_CORS_ALLOWED_ORIGINS:-https://imsteven.cloud,https://www.imsteven.cloud}
   web:
     restart: unless-stopped
     environment:

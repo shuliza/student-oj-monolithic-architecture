@@ -49,6 +49,13 @@ npm run dev
 http://localhost:5173
 ```
 
+本地 `npm run dev` 已内置 Vite 代理，将 `/api` 转发到 `http://localhost:8080`。因此本地开发时：
+- 前端直接访问 `http://localhost:5173`；
+- 后端单独启动在 `8080`；
+- 不需要单独配置 Nginx。
+
+生产环境仍通过 Nginx `/api` 网关统一转发。Nginx `auth_request` 会在转发到后端前注入内部鉴权头。
+
 ## 本地后端运行
 
 需要 JDK 21。打包单体应用：

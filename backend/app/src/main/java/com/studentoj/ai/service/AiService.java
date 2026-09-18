@@ -5,6 +5,8 @@ import com.studentoj.ai.dto.AiSuggestionRequest;
 import com.studentoj.ai.dto.AiSuggestionResponse;
 import com.studentoj.ai.entity.AiSuggestionEntity;
 import com.studentoj.ai.mapper.AiSuggestionMapper;
+import com.studentoj.problem.mapper.ProblemMapper;
+import com.studentoj.problem.mapper.SubmissionMapper;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
@@ -22,25 +24,54 @@ public class AiService {
     private final AiSuggestionMapper mapper;
     private final RuleSuggestionGenerator generator;
     private final DeepSeekClient deepSeekClient;
+    private final SubmissionMapper submissionMapper;
+    private final ProblemMapper problemMapper;
     private final String mode;
 
     public AiService(AiSuggestionMapper mapper,
                      RuleSuggestionGenerator generator,
                      DeepSeekClient deepSeekClient,
+                     SubmissionMapper submissionMapper,
+                     ProblemMapper problemMapper,
                      @Value("${studentoj.ai.mode:auto}") String mode) {
         this.mapper = mapper;
         this.generator = generator;
         this.deepSeekClient = deepSeekClient;
+        this.submissionMapper = submissionMapper;
+        this.problemMapper = problemMapper;
         this.mode = mode == null ? "auto" : mode.trim().toLowerCase();
     }
 
     public AiSuggestionResponse generate(Long userId, AiSuggestionRequest request) {
-        String suggestion = resolveSuggestion(request);
+        if (request == null || request.submissionId() == null || request.submissionId() <= 0) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.BAD_REQUEST, "提交记录 ID 不能为空");
+        }
+        Long safeUserId = userId == null ? 0L : userId;
+
+        // 从后端数据库查询提交快照，不信任前端传入的历史元数据
+        com.studentoj.problem.entity.SubmissionEntity submission = submissionMapper.selectById(request.submissionId());
+        if (submission == null || !safeUserId.equals(submission.getUserId())) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.NOT_FOUND, "提交记录不存在");
+        }
+        com.studentoj.problem.entity.ProblemEntity problem = problemMapper.selectById(submission.getProblemId());
+        String problemTitle = problem == null ? "" : problem.getTitle();
+        String studentSql = submission.getSqlContent() == null ? "" : submission.getSqlContent();
+        String judgeStatus = submission.getStatus() == null ? "" : submission.getStatus();
+        String errorMessage = submission.getMessage() == null ? "" : submission.getMessage();
+
+        // 使用脱敏和限长后的数据生成建议
+        AiSuggestionRequest snapshot = new AiSuggestionRequest(
+                submission.getId(), submission.getProblemId(),
+                truncate(problemTitle, 120), truncate(studentSql, 2000),
+                judgeStatus, judgeStatus, truncate(errorMessage, 500), truncate(studentSql, 2000));
+        String suggestion = resolveSuggestion(snapshot);
 
         AiSuggestionEntity entity = new AiSuggestionEntity();
-        entity.setUserId(userId == null ? 0L : userId);
-        entity.setSubmissionId(request.submissionId());
-        entity.setProblemId(request.problemId());
+        entity.setUserId(safeUserId);
+        entity.setSubmissionId(submission.getId());
+        entity.setProblemId(submission.getProblemId());
         entity.setSuggestion(suggestion);
         entity.setCreatedAt(LocalDateTime.now());
         mapper.insert(entity);
@@ -64,6 +95,11 @@ public class AiService {
             }
         }
         return generator.generate(request);
+    }
+
+    private static String truncate(String value, int maxLength) {
+        if (value == null) return "";
+        return value.length() <= maxLength ? value : value.substring(0, maxLength);
     }
 
     public List<AiSuggestionResponse> history(Long userId, Long problemId) {

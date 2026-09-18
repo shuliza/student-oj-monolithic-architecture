@@ -1,6 +1,11 @@
 services:
   mysql:
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
     environment:
       TZ: Asia/Shanghai
   redis:
@@ -8,10 +13,16 @@ services:
     ports: !reset []
   app:
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
     ports: !reset []
     environment:
       TZ: Asia/Shanghai
       JAVA_TOOL_OPTIONS: -Duser.timezone=Asia/Shanghai
+      SPRING_PROFILES_ACTIVE: prod
   web:
     restart: unless-stopped
     environment:

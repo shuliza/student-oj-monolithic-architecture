@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { problemApi, submissionApi } from '@/api'
 import { useAuthStore } from '@/stores/auth'
+import { isCurrentSession, sessionSnapshot } from '@/utils/session'
 import type { Problem, Submission } from '@/types'
 
 export const useProblemStore = defineStore('problem', {
@@ -9,19 +10,27 @@ export const useProblemStore = defineStore('problem', {
     submissions: [] as Submission[]
   }),
   actions: {
+    resetState() {
+      this.problems = []
+      this.submissions = []
+    },
     async fetchProblems() {
+      const snapshot = sessionSnapshot()
       try {
-        this.problems = await problemApi.list()
+        const problems = await problemApi.list()
+        if (isCurrentSession(snapshot)) this.problems = problems
       } catch {
-        this.problems = []
+        if (isCurrentSession(snapshot)) this.problems = []
       }
     },
     async fetchSubmissions(params?: { groupName?: string; studentId?: number }) {
+      const snapshot = sessionSnapshot()
       try {
         const auth = useAuthStore()
-        this.submissions = auth.isTeacher ? await submissionApi.list(params) : await submissionApi.mine()
+        const submissions = auth.isTeacher ? await submissionApi.list(params) : await submissionApi.mine()
+        if (isCurrentSession(snapshot)) this.submissions = submissions
       } catch {
-        this.submissions = []
+        if (isCurrentSession(snapshot)) this.submissions = []
       }
     }
   }

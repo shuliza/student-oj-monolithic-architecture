@@ -8,8 +8,8 @@ spring:
   datasource:
     url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:student_oj}?useSSL=false&useUnicode=true&characterEncoding=UTF-8&connectionCollation=utf8mb4_0900_ai_ci&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
     driver-class-name: com.mysql.cj.jdbc.Driver
-    username: ${MYSQL_USERNAME:root}
-    password: ${MYSQL_PASSWORD:root}
+    username: ${MYSQL_USERNAME:studentoj}
+    password: ${MYSQL_PASSWORD:}
     hikari:
       maximum-pool-size: ${MAIN_DB_POOL_SIZE:20}
       connection-timeout: 5000
@@ -30,7 +30,7 @@ studentoj:
   auth:
     token:
       ttl-seconds: 86400
-    internal-secret: ${STUDENTOJ_AUTH_INTERNAL_SECRET:student-oj-internal-v1}
+    internal-secret: ${STUDENTOJ_AUTH_INTERNAL_SECRET:}
   # 提交限流与题目缓存
   submission:
     run-min-interval-ms: ${RUN_MIN_INTERVAL_MS:2500}
@@ -43,10 +43,10 @@ studentoj:
     max-concurrent-executions: ${SANDBOX_MAX_CONCURRENT_EXECUTIONS:16}
     acquire-timeout-ms: ${SANDBOX_ACQUIRE_TIMEOUT_MS:1500}
     datasource:
-      jdbc-url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${SANDBOX_MYSQL_DATABASE:student_oj_sandbox}?useSSL=false&useUnicode=true&characterEncoding=UTF-8&connectionCollation=utf8mb4_0900_ai_ci&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&allowMultiQueries=true
+      jdbc-url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${SANDBOX_MYSQL_DATABASE:student_oj_sandbox}?useSSL=false&useUnicode=true&characterEncoding=UTF-8&connectionCollation=utf8mb4_0900_ai_ci&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
       driver-class-name: com.mysql.cj.jdbc.Driver
       username: ${SANDBOX_MYSQL_USERNAME:sandbox}
-      password: ${SANDBOX_MYSQL_PASSWORD:sandbox123}
+      password: ${SANDBOX_MYSQL_PASSWORD:}
       maximum-pool-size: ${SANDBOX_DB_POOL_SIZE:32}
       connection-timeout: 5000
   # AI 建议（DeepSeek 外部 API）

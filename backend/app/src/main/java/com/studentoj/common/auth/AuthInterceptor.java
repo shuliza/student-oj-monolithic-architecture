@@ -23,6 +23,7 @@ public class AuthInterceptor implements HandlerInterceptor {
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
+        AuthContext.clear();
         if ("OPTIONS".equalsIgnoreCase(request.getMethod()) || request.getRequestURI().startsWith("/actuator/")) {
             return true;
         }
@@ -47,6 +48,7 @@ public class AuthInterceptor implements HandlerInterceptor {
         AuthContext.set(user);
         if (!hasRequiredRole(handler, user.role())) {
             response.sendError(HttpStatus.FORBIDDEN.value(), "Forbidden");
+            AuthContext.clear();
             return false;
         }
         return true;

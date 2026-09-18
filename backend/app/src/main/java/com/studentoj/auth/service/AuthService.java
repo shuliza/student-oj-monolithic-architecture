@@ -10,6 +10,7 @@ import com.studentoj.auth.mapper.UserMapper;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 @Service
@@ -25,6 +26,7 @@ public class AuthService {
         this.tokenStore = tokenStore;
     }
 
+    @Transactional
     public LoginResponse login(LoginRequest request) {
         if (request == null || request.username() == null || request.password() == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "用户名和密码不能为空");
@@ -34,8 +36,9 @@ public class AuthService {
         if (user == null) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "用户不存在");
         }
-        if ("DISABLED".equalsIgnoreCase(user.getStatus())) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "账号已被禁用");
+        if (!"ACTIVE".equalsIgnoreCase(user.getStatus()) || user.getSessionVersion() == null
+                || user.getRole() == null || user.getRole().isBlank()) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "账号状态不可用");
         }
         if (!passwordEncoder.matches(request.password(), user.getPasswordHash())) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "密码错误");
@@ -45,15 +48,27 @@ public class AuthService {
                     "当前账号身份为 " + user.getRole() + "，无法以 " + request.role() + " 身份登录");
         }
 
-        LoginResponse payload = toResponse(null, user);
+        UserEntity locked = userMapper.selectByIdForUpdate(user.getId());
+        if (locked == null || !"ACTIVE".equalsIgnoreCase(locked.getStatus())
+                || !java.util.Objects.equals(user.getSessionVersion(), locked.getSessionVersion())
+                || !java.util.Objects.equals(user.getPasswordHash(), locked.getPasswordHash())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "账号状态已变化，请重新登录");
+        }
+        LoginResponse payload = toResponse(null, locked);
         String token = tokenStore.issue(payload);
-        return toResponse(token, user);
+        return toResponse(token, locked);
     }
 
     public LoginResponse me(String token) {
         LoginResponse cached = tokenStore.resolve(token);
         if (cached == null) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "会话已过期");
+        }
+        UserEntity current = userMapper.selectById(cached.userId());
+        int version = current == null || current.getSessionVersion() == null ? 0 : current.getSessionVersion();
+        if (current == null || !"ACTIVE".equalsIgnoreCase(current.getStatus()) || version != (cached.sessionVersion() == null ? 0 : cached.sessionVersion())) {
+            tokenStore.revoke(token);
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "会话已失效");
         }
         return cached;
     }
@@ -77,8 +92,11 @@ public class AuthService {
         if (!passwordEncoder.matches(request.oldPassword(), user.getPasswordHash())) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "原密码错误");
         }
-        user.setPasswordHash(passwordEncoder.encode(request.newPassword().trim()));
-        userMapper.updateById(user);
+        int updated = userMapper.updatePassword(user.getId(), passwordEncoder.encode(request.newPassword().trim()), user.getSessionVersion() == null ? 0 : user.getSessionVersion());
+        if (updated != 1) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "账号状态已变化，请重试");
+        }
+        tokenStore.revokeUser(user.getId());
     }
 
     public LoginResponse updateProfile(String token, UpdateProfileRequest request) {
@@ -87,15 +105,14 @@ public class AuthService {
         if (user == null) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "用户不存在");
         }
-        if (request != null) {
-            if (request.realName() != null && !request.realName().isBlank()) {
-                user.setRealName(request.realName().trim());
-            }
-            if (request.email() != null) {
-                user.setEmail(request.email().trim());
-            }
+        String realName = request != null && request.realName() != null && !request.realName().isBlank() ? request.realName().trim() : user.getRealName();
+        String email = request != null && request.email() != null ? request.email().trim() : user.getEmail();
+        int updated = userMapper.updateProfileFields(user.getId(), realName, email, user.getSessionVersion() == null ? 0 : user.getSessionVersion());
+        if (updated != 1) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "资料已被其他请求修改，请重试");
         }
-        userMapper.updateById(user);
+        user.setRealName(realName);
+        user.setEmail(email);
         LoginResponse refreshed = toResponse(session.token(), user);
         tokenStore.update(token, refreshed);
         return refreshed;
@@ -112,7 +129,8 @@ public class AuthService {
                 user.getStudentNo(),
                 user.getEmail(),
                 groupName,
-                user.getStatus()
+                user.getStatus(),
+                user.getSessionVersion() == null ? 0 : user.getSessionVersion()
         );
     }
 }

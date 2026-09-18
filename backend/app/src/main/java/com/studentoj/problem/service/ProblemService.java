@@ -70,7 +70,7 @@ public class ProblemService {
         return toResponse(entity, stats.get(entity.getId()), userState.get(entity.getId()));
     }
 
-    public SubmissionResponse submit(SubmissionRequest request) {
+    public SubmissionResponse submit(SubmissionRequest request, Long authenticatedUserId) {
         if (request == null || request.problemId() == null || request.sqlContent() == null || request.sqlContent().isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "提交内容不完整");
         }
@@ -79,7 +79,10 @@ public class ProblemService {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "题目不存在");
         }
 
-        Long userId = request.userId() == null ? 0L : request.userId();
+        if (authenticatedUserId == null || authenticatedUserId <= 0) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "未认证用户不能提交");
+        }
+        Long userId = authenticatedUserId;
         SubmissionEntity entity = new SubmissionEntity();
         entity.setUserId(userId);
         entity.setProblemId(request.problemId());

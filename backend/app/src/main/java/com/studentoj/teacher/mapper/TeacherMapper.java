@@ -29,8 +29,8 @@ public interface TeacherMapper {
     @Update("UPDATE user SET group_id = #{groupId} WHERE id = #{userId} AND role = 'STUDENT'")
     int assignUserToGroup(@Param("userId") Long userId, @Param("groupId") Long groupId);
 
-    @Update("UPDATE user SET group_id = NULL WHERE id = #{userId} AND role = 'STUDENT'")
-    int removeUserFromGroup(@Param("userId") Long userId);
+    @Update("UPDATE user SET group_id = NULL WHERE id = #{userId} AND group_id = #{groupId} AND role = 'STUDENT'")
+    int removeUserFromGroup(@Param("userId") Long userId, @Param("groupId") Long groupId);
 
     @Insert("INSERT INTO class_group(name, teacher_name, description) VALUES(#{name}, #{teacherName}, #{description})")
     int insertGroup(@Param("name") String name, @Param("teacherName") String teacherName, @Param("description") String description);
@@ -55,10 +55,10 @@ public interface TeacherMapper {
     int updateStudent(@Param("id") Long id, @Param("realName") String realName,
                       @Param("studentNo") String studentNo, @Param("groupId") Long groupId);
 
-    @Update("UPDATE user SET status = #{status} WHERE id = #{id} AND role = 'STUDENT'")
+    @Update("UPDATE user SET status = #{status}, session_version = session_version + 1 WHERE id = #{id} AND role = 'STUDENT'")
     int updateStudentStatus(@Param("id") Long id, @Param("status") String status);
 
-    @Update("UPDATE user SET password_hash = #{passwordHash} WHERE id = #{id} AND role = 'STUDENT'")
+    @Update("UPDATE user SET password_hash = #{passwordHash}, session_version = session_version + 1 WHERE id = #{id} AND role = 'STUDENT'")
     int updateStudentPassword(@Param("id") Long id, @Param("passwordHash") String passwordHash);
 
     @Insert("INSERT INTO user(username, password_hash, real_name, student_no, group_id, role, status) " +
@@ -76,6 +76,12 @@ public interface TeacherMapper {
     @Select("SELECT COUNT(*) FROM user WHERE username = #{username}")
     int countByUsername(@Param("username") String username);
 
+    @Select("SELECT COUNT(*) FROM user WHERE student_no = #{studentNo} AND student_no <> ''")
+    int countByStudentNo(@Param("studentNo") String studentNo);
+
+    @Select("SELECT id FROM user WHERE student_no = #{studentNo} AND role = 'STUDENT' LIMIT 1")
+    Long selectStudentIdByStudentNo(@Param("studentNo") String studentNo);
+
     @Insert("INSERT INTO user(username, password_hash, real_name, email, student_no, role, status) " +
             "VALUES(#{username}, #{passwordHash}, #{realName}, #{email}, '', 'TEACHER', 'ACTIVE')")
     int insertTeacher(@Param("username") String username, @Param("passwordHash") String passwordHash,
@@ -84,10 +90,10 @@ public interface TeacherMapper {
     @Select("SELECT id FROM user WHERE id = #{id} AND role = 'TEACHER'")
     Long selectTeacherId(@Param("id") Long id);
 
-    @Update("UPDATE user SET status = #{status} WHERE id = #{id} AND role = 'TEACHER'")
+    @Update("UPDATE user SET status = #{status}, session_version = session_version + 1 WHERE id = #{id} AND role = 'TEACHER'")
     int updateTeacherStatus(@Param("id") Long id, @Param("status") String status);
 
-    @Update("UPDATE user SET password_hash = #{passwordHash} WHERE id = #{id} AND role = 'TEACHER'")
+    @Update("UPDATE user SET password_hash = #{passwordHash}, session_version = session_version + 1 WHERE id = #{id} AND role = 'TEACHER'")
     int updateTeacherPassword(@Param("id") Long id, @Param("passwordHash") String passwordHash);
 
 

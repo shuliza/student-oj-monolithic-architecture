@@ -3,6 +3,8 @@ import * as monaco from 'monaco-editor'
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 const model = defineModel<string>({ required: true })
+
+export type SqlMonacoEditorExpose = { executeEdits: (value: string) => void }
 const props = withDefaults(
   defineProps<{
     height?: string
@@ -13,6 +15,23 @@ const props = withDefaults(
 )
 const host = ref<HTMLElement | null>(null)
 let editor: monaco.editor.IStandaloneCodeEditor | null = null
+
+function executeEdits(value: string) {
+  if (!editor) {
+    model.value = value
+    return
+  }
+  const current = editor.getValue()
+  if (current === value) return
+  editor.executeEdits('sql-formatter', [{
+    range: editor.getModel()?.getFullModelRange() ?? new monaco.Range(1, 1, 1, 1),
+    text: value,
+    forceMoveMarkers: true
+  }])
+  editor.pushUndoStop()
+}
+
+defineExpose<SqlMonacoEditorExpose>({ executeEdits })
 
 onMounted(() => {
   if (!host.value) return

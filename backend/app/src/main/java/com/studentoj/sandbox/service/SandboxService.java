@@ -52,6 +52,12 @@ public class SandboxService {
     @Value("${studentoj.sandbox.acquire-timeout-ms:1500}")
     private long acquireTimeoutMs;
 
+    @Value("${studentoj.sandbox.max-sql-bytes:65536}")
+    private int maxSqlBytes;
+
+    @Value("${studentoj.sandbox.max-init-statements:64}")
+    private int maxInitStatements;
+
     public SandboxService(@org.springframework.beans.factory.annotation.Qualifier("sandboxDataSource") DataSource dataSource) {
         this.dataSource = dataSource;
     }
@@ -88,6 +94,12 @@ public class SandboxService {
         if (isBlank(request.answerSql())) {
             return response("RUNTIME_ERROR", 0, "Reference answer SQL is missing.", false, null);
         }
+        if (utf8Length(request.studentSql()) > maxSqlBytes || utf8Length(request.answerSql()) > maxSqlBytes
+                || utf8Length(request.initSql()) > maxSqlBytes) {
+            return response("REQUEST_TOO_LARGE", 0, "SQL input exceeds the configured limit.", false, null);
+        }
+        String trustedError = validateTrustedScripts(request.initSql(), request.answerSql());
+        if (trustedError != null) return response("RUNTIME_ERROR", 0, trustedError, false, null);
 
         String studentSql = trimTrailingSemicolon(request.studentSql());
         String validationError = validateStudentSql(studentSql);
@@ -175,6 +187,24 @@ public class SandboxService {
             log.warn("Failed to drop sandbox database {}: {}", databaseName, e.getMessage());
         }
     }
+
+    private String validateTrustedScripts(String initSql, String answerSql) {
+        if (isBlank(initSql) || isBlank(answerSql)) return "Trusted testcase SQL is missing.";
+        try {
+            if (splitStatements(initSql).size() > maxInitStatements) return "Too many initialization statements.";
+            var answer = CCJSqlParserUtil.parseStatements(trimTrailingSemicolon(answerSql)).getStatements();
+            if (answer.size() != 1 || !(answer.get(0) instanceof Select)) return "Reference answer must be one SELECT/WITH statement.";
+            String normalized = stripSqlLiteralsAndComments(answerSql).toLowerCase();
+            if (normalized.matches("(?s).*\\b(load_file|sleep|benchmark)\\s*\\(.*") || normalized.contains(" into outfile") || normalized.contains(" into dumpfile")) return "Unsafe reference answer SQL.";
+            for (String statement : splitStatements(initSql)) {
+                String s = stripSqlLiteralsAndComments(statement).trim().toLowerCase();
+                if (!s.matches("(?s)^(create\\s+table|insert\\s+into|alter\\s+table|drop\\s+table|truncate\\s+table)\\b.*")) return "Unsafe initialization statement.";
+            }
+            return null;
+        } catch (Exception e) { return "Trusted testcase SQL validation failed."; }
+    }
+
+    private int utf8Length(String value) { return value == null ? 0 : value.getBytes(java.nio.charset.StandardCharsets.UTF_8).length; }
 
     private void executeSqlScript(Connection conn, String sqlScript) throws SQLException {
         if (isBlank(sqlScript)) {

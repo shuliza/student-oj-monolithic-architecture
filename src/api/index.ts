@@ -162,8 +162,8 @@ export const teacherApi = {
     const { data } = await http.post('/teacher/grades/export', request, { responseType: 'blob' })
     return data
   },
-  async exportStudentGrades(studentId: number) {
-    const { data } = await http.get(`/teacher/grades/export/student/${studentId}`, { responseType: 'blob' })
+  async exportStudentGrades(studentId: number, format: 'xlsx' | 'csv' = 'xlsx') {
+    const { data } = await http.get(`/teacher/grades/export/student/${studentId}`, { params: { format }, responseType: 'blob' })
     return data
   },
   async createGroup(request: { name: string; teacherName?: string; description?: string }) {

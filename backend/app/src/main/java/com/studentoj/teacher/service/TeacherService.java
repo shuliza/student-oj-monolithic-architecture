@@ -26,6 +26,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -110,6 +111,7 @@ public class TeacherService {
                 request.studentNo() == null ? "" : request.studentNo().trim(), groupId);
     }
 
+    @Transactional
     public void updateStudentStatus(Long id, String status) {
         if (id == null || teacherMapper.selectStudentId(id) == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "学生不存在");
@@ -118,12 +120,14 @@ public class TeacherService {
         if (!"ACTIVE".equals(normalized) && !"DISABLED".equals(normalized)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "状态值非法");
         }
-        teacherMapper.updateStudentStatus(id, normalized);
+        int updated = teacherMapper.updateStudentStatus(id, normalized);
+        if (updated != 1) throw new ResponseStatusException(HttpStatus.CONFLICT, "学生状态已变化，请重试");
         if ("DISABLED".equals(normalized)) {
             tokenStore.revokeUser(id);
         }
     }
 
+    @Transactional
     public void resetStudentPassword(Long id, String newPassword) {
         if (id == null || teacherMapper.selectStudentId(id) == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "学生不存在");
@@ -132,7 +136,8 @@ public class TeacherService {
         if (pwd.length() < 6) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "密码长度至少 6 位");
         }
-        teacherMapper.updateStudentPassword(id, new BCryptPasswordEncoder().encode(pwd));
+        int updated = teacherMapper.updateStudentPassword(id, new BCryptPasswordEncoder().encode(pwd));
+        if (updated != 1) throw new ResponseStatusException(HttpStatus.CONFLICT, "学生密码已变化，请重试");
         tokenStore.revokeUser(id);
     }
 
@@ -176,6 +181,7 @@ public class TeacherService {
         }
     }
 
+    @Transactional
     public void updateTeacherStatus(Long id, String status) {
         if (id == null || teacherMapper.selectTeacherId(id) == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "教师不存在");
@@ -184,12 +190,14 @@ public class TeacherService {
         if (!"ACTIVE".equals(normalized) && !"DISABLED".equals(normalized)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "状态值非法");
         }
-        teacherMapper.updateTeacherStatus(id, normalized);
+        int updated = teacherMapper.updateTeacherStatus(id, normalized);
+        if (updated != 1) throw new ResponseStatusException(HttpStatus.CONFLICT, "教师状态已变化，请重试");
         if ("DISABLED".equals(normalized)) {
             tokenStore.revokeUser(id);
         }
     }
 
+    @Transactional
     public void resetTeacherPassword(Long id, String newPassword) {
         if (id == null || teacherMapper.selectTeacherId(id) == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "教师不存在");
@@ -198,7 +206,8 @@ public class TeacherService {
         if (pwd.length() < 6) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "密码长度至少 6 位");
         }
-        teacherMapper.updateTeacherPassword(id, new BCryptPasswordEncoder().encode(pwd));
+        int updated = teacherMapper.updateTeacherPassword(id, new BCryptPasswordEncoder().encode(pwd));
+        if (updated != 1) throw new ResponseStatusException(HttpStatus.CONFLICT, "教师密码已变化，请重试");
         tokenStore.revokeUser(id);
     }
 
@@ -254,18 +263,19 @@ public class TeacherService {
         if (value == null) {
             return "";
         }
+        if (!value.isEmpty() && "=+-@".indexOf(value.charAt(0)) >= 0) value = "'" + value;
         if (value.contains(",") || value.contains("\"") || value.contains("\n") || value.contains("\r")) {
             return "\"" + value.replace("\"", "\"\"") + "\"";
         }
         return value;
     }
 
-    public byte[] exportStudentGrades(Long studentId) {
-        if (studentId == null || studentId <= 0) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "学生ID不能为空");
-        }
+    public byte[] exportStudentGrades(Long studentId) { return exportStudentGrades(studentId, "xlsx"); }
+
+    public byte[] exportStudentGrades(Long studentId, String format) {
+        if (studentId == null || studentId <= 0) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "学生ID不能为空");
         List<Map<String, Object>> data = teacherMapper.selectGradeData(null, studentId, null, null);
-        return generateGradeExcel(data);
+        return isCsv(format) ? generateGradeCsv(data) : generateGradeExcel(data);
     }
 
     private byte[] generateGradeExcel(List<Map<String, Object>> data) {
@@ -326,7 +336,7 @@ public class TeacherService {
         // Clear group_id for all students in this group
         List<Map<String, Object>> members = teacherMapper.selectGroupMembers(id);
         for (Map<String, Object> m : members) {
-            teacherMapper.removeUserFromGroup(((Number) m.get("id")).longValue());
+            teacherMapper.removeUserFromGroup(((Number) m.get("id")).longValue(), id);
         }
         teacherMapper.deleteGroup(id);
     }
@@ -354,7 +364,7 @@ public class TeacherService {
         }
         if (studentIds == null) return;
         for (Long studentId : studentIds) {
-            teacherMapper.removeUserFromGroup(studentId);
+            teacherMapper.removeUserFromGroup(studentId, groupId);
         }
     }
 
@@ -383,37 +393,48 @@ public class TeacherService {
         }
     }
 
-    public int importStudents(MultipartFile file) {
-        if (file == null || file.isEmpty()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请上传文件");
-        }
+    @Transactional
+    public Map<String, Object> importStudents(MultipartFile file) {
+        validateImportFile(file);
         BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
-        int count = 0;
+        int imported = 0, skipped = 0, failed = 0;
+        List<Map<String, Object>> errors = new java.util.ArrayList<>();
+        java.util.Set<String> usernames = new java.util.HashSet<>();
+        java.util.Set<String> studentNos = new java.util.HashSet<>();
         try (InputStream is = file.getInputStream(); Workbook wb = new XSSFWorkbook(is)) {
             Sheet sheet = wb.getSheetAt(0);
-            // Skip header row
+            if (sheet.getLastRowNum() > 5000) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "行数超过 5000 限制");
             for (int i = 1; i <= sheet.getLastRowNum(); i++) {
                 Row row = sheet.getRow(i);
-                if (row == null) continue;
+                if (row == null || row.getPhysicalNumberOfCells() == 0) { skipped++; continue; }
+                int line = i + 1;
                 String studentNo = getCellStr(row.getCell(0));
                 String realName = getCellStr(row.getCell(1));
                 String username = getCellStr(row.getCell(2));
                 String password = getCellStr(row.getCell(3));
                 String groupName = getCellStr(row.getCell(4));
-                if (username.isEmpty()) continue;
-                Long groupId = groupName.isEmpty() ? null : teacherMapper.selectGroupIdByName(groupName);
-                String passwordHash = password.isEmpty() ? "" : encoder.encode(password);
-                try {
-                    teacherMapper.insertStudent(username, passwordHash, realName, studentNo, groupId);
-                    count++;
-                } catch (Exception e) {
-                    log.warn("Skip student {}: {}", username, e.getMessage());
-                }
+                String error = null;
+                if (username.isEmpty()) error = "账号不能为空";
+                else if (realName.isEmpty()) error = "姓名不能为空";
+                else if (password.isEmpty()) error = "密码不能为空";
+                else if (password.length() < 6) error = "密码长度至少 6 位";
+                else if (!usernames.add(username) || teacherMapper.countByUsername(username) > 0) error = "账号重复或已存在";
+                else if (!studentNo.isEmpty() && (!studentNos.add(studentNo) || teacherMapper.countByStudentNo(studentNo) > 0)) error = "学号重复或已存在";
+                Long groupId = null;
+                if (error == null && !groupName.isEmpty()) { groupId = teacherMapper.selectGroupIdByName(groupName); if (groupId == null) error = "分组不存在：" + groupName; }
+                if (error != null) { failed++; errors.add(Map.of("row", line, "message", error)); continue; }
+                try { teacherMapper.insertStudent(username, encoder.encode(password), realName, studentNo, groupId); imported++; }
+                catch (Exception e) { failed++; errors.add(Map.of("row", line, "message", "账号或学号已存在")); }
             }
-        } catch (IOException e) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "文件解析失败");
-        }
-        return count;
+        } catch (IOException e) { throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "文件解析失败"); }
+        return Map.of("imported", imported, "skipped", skipped, "failed", failed, "errors", errors);
+    }
+
+    private void validateImportFile(MultipartFile file) {
+        if (file == null || file.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请上传文件");
+        String name = file.getOriginalFilename() == null ? "" : file.getOriginalFilename().toLowerCase(java.util.Locale.ROOT);
+        if (!name.endsWith(".xlsx")) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "仅支持 xlsx 文件");
+        if (file.getSize() > 10 * 1024 * 1024) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "文件大小不能超过 10MB");
     }
 
     public byte[] exportGroupMembers(Long groupId) {
@@ -446,37 +467,29 @@ public class TeacherService {
         }
     }
 
-    public int importGroupMembers(Long groupId, MultipartFile file) {
-        if (groupId == null || teacherMapper.selectGroupById(groupId) == null) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "分组不存在");
-        }
-        if (file == null || file.isEmpty()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请上传文件");
-        }
-        int count = 0;
+    @Transactional
+    public Map<String, Object> importGroupMembers(Long groupId, MultipartFile file) {
+        if (groupId == null || teacherMapper.selectGroupById(groupId) == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "分组不存在");
+        validateImportFile(file);
+        int imported = 0, skipped = 0, failed = 0;
+        List<Map<String, Object>> errors = new java.util.ArrayList<>();
         try (InputStream is = file.getInputStream(); Workbook wb = new XSSFWorkbook(is)) {
             Sheet sheet = wb.getSheetAt(0);
+            if (sheet.getLastRowNum() > 5000) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "行数超过 5000 限制");
+            List<Map<String, Object>> allStudents = teacherMapper.selectStudents();
             for (int i = 1; i <= sheet.getLastRowNum(); i++) {
                 Row row = sheet.getRow(i);
-                if (row == null) continue;
+                if (row == null || row.getPhysicalNumberOfCells() == 0) { skipped++; continue; }
                 String studentNo = getCellStr(row.getCell(0));
-                // Try to find student by student_no
-                if (studentNo.isEmpty()) continue;
-                // Find user ID from student_no - query all students and match
-                List<Map<String, Object>> allStudents = teacherMapper.selectStudents();
-                for (Map<String, Object> s : allStudents) {
-                    if (studentNo.equals(s.get("studentNo"))) {
-                        Long userId = ((Number) s.get("id")).longValue();
-                        teacherMapper.assignUserToGroup(userId, groupId);
-                        count++;
-                        break;
-                    }
-                }
+                if (studentNo.isEmpty()) { failed++; errors.add(Map.of("row", i + 1, "message", "学号不能为空")); continue; }
+                Long userId = null;
+                for (Map<String, Object> s : allStudents) if (studentNo.equals(s.get("studentNo"))) { userId = ((Number) s.get("id")).longValue(); break; }
+                if (userId == null) { failed++; errors.add(Map.of("row", i + 1, "message", "学号不存在")); continue; }
+                if (teacherMapper.assignUserToGroup(userId, groupId) > 0) imported++;
+                else { failed++; errors.add(Map.of("row", i + 1, "message", "成员更新失败")); }
             }
-        } catch (IOException e) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "文件解析失败");
-        }
-        return count;
+        } catch (IOException e) { throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "文件解析失败"); }
+        return Map.of("imported", imported, "skipped", skipped, "failed", failed, "errors", errors);
     }
 
     private String getCellStr(Cell cell) {

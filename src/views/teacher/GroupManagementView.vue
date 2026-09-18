@@ -22,6 +22,10 @@ const memberGroupId = ref<number | null>(null)
 const memberGroupName = ref('')
 const members = ref<User[]>([])
 const memberLoading = ref(false)
+let groupsRequestGeneration = 0
+let editingRequestGeneration = 0
+let membersRequestGeneration = 0
+let studentsRequestGeneration = 0
 
 // Add-member dialog
 const addMemberVisible = ref(false)
@@ -30,15 +34,18 @@ const allStudents = ref<User[]>([])
 const selectedStudentIds = ref<number[]>([])
 
 const fetchGroups = async () => {
+  const generation = ++groupsRequestGeneration
   loading.value = true
   try {
-    groups.value = await teacherApi.groups()
+    const result = await teacherApi.groups()
+    if (generation === groupsRequestGeneration) groups.value = result
   } finally {
-    loading.value = false
+    if (generation === groupsRequestGeneration) loading.value = false
   }
 }
 
 const openCreateDialog = () => {
+  ++editingRequestGeneration
   dialogTitle.value = '新建分组'
   editingId.value = null
   form.value = { name: '', teacherName: '', description: '' }
@@ -46,6 +53,7 @@ const openCreateDialog = () => {
 }
 
 const openEditDialog = (item: ClassGroup) => {
+  ++editingRequestGeneration
   dialogTitle.value = '编辑分组'
   editingId.value = item.id
   form.value = { name: item.name, teacherName: item.teacherName, description: item.description }
@@ -57,12 +65,17 @@ const submitGroup = async () => {
     ElMessage.warning('请输入分组名称')
     return
   }
+  const id = editingId.value
+  const generation = editingRequestGeneration
+  const payload = { ...form.value }
   try {
-    if (editingId.value) {
-      await teacherApi.updateGroup(editingId.value, form.value)
+    if (id) {
+      await teacherApi.updateGroup(id, payload)
+      if (generation !== editingRequestGeneration || editingId.value !== id) return
       ElMessage.success('分组已更新')
     } else {
-      await teacherApi.createGroup(form.value)
+      await teacherApi.createGroup(payload)
+      if (generation !== editingRequestGeneration || editingId.value !== null) return
       ElMessage.success('分组已创建')
     }
     dialogVisible.value = false
@@ -73,9 +86,10 @@ const submitGroup = async () => {
 }
 
 const deleteGroup = async (item: ClassGroup) => {
+  const id = item.id
   try {
     await ElMessageBox.confirm(`确认删除分组「${item.name}」？该分组内的学生将被移出。`, '删除确认', { type: 'warning' })
-    await teacherApi.deleteGroup(item.id)
+    await teacherApi.deleteGroup(id)
     ElMessage.success('分组已删除')
     await fetchGroups()
   } catch {}
@@ -85,25 +99,31 @@ const openMemberDrawer = async (item: ClassGroup) => {
   memberGroupId.value = item.id
   memberGroupName.value = item.name
   memberDrawerVisible.value = true
-  await fetchMembers()
+  await fetchMembers(item.id)
 }
 
-const fetchMembers = async () => {
-  if (!memberGroupId.value) return
+const fetchMembers = async (groupId = memberGroupId.value) => {
+  if (!groupId) return
+  const generation = ++membersRequestGeneration
   memberLoading.value = true
   try {
-    members.value = await teacherApi.getGroupMembers(memberGroupId.value)
+    const result = await teacherApi.getGroupMembers(groupId)
+    if (generation === membersRequestGeneration && memberGroupId.value === groupId) members.value = result
   } finally {
-    memberLoading.value = false
+    if (generation === membersRequestGeneration && memberGroupId.value === groupId) memberLoading.value = false
   }
 }
 
 const removeMember = async (student: User) => {
+  const groupId = memberGroupId.value
+  const studentId = student.id
+  if (!groupId) return
   try {
     await ElMessageBox.confirm(`确认将「${student.realName}」移出分组？`, '移出确认', { type: 'warning' })
-    await teacherApi.removeGroupMembers(memberGroupId.value!, [student.id])
+    await teacherApi.removeGroupMembers(groupId, [studentId])
+    if (memberGroupId.value !== groupId) return
     ElMessage.success('已移出')
-    await fetchMembers()
+    await fetchMembers(groupId)
     await fetchGroups()
   } catch {}
 }
@@ -112,7 +132,9 @@ const openAddMember = async () => {
   selectedStudentIds.value = []
   addMemberVisible.value = true
   if (!allStudents.value.length) {
-    allStudents.value = await teacherApi.students()
+    const generation = ++studentsRequestGeneration
+    const result = await teacherApi.students()
+    if (generation === studentsRequestGeneration && addMemberVisible.value) allStudents.value = result
   }
 }
 
@@ -127,24 +149,29 @@ const submitAddMembers = async () => {
     return
   }
   addMemberSaving.value = true
+  const groupId = memberGroupId.value
+  const studentIds = [...selectedStudentIds.value]
   try {
-    await teacherApi.addGroupMembers(memberGroupId.value, selectedStudentIds.value)
-    ElMessage.success(`已添加 ${selectedStudentIds.value.length} 名学生`)
+    await teacherApi.addGroupMembers(groupId, studentIds)
+    if (memberGroupId.value !== groupId) return
+    ElMessage.success(`已添加 ${studentIds.length} 名学生`)
     addMemberVisible.value = false
-    await fetchMembers()
+    await fetchMembers(groupId)
     await fetchGroups()
   } catch {
     ElMessage.error('添加失败')
   } finally {
-    addMemberSaving.value = false
+    if (memberGroupId.value === groupId) addMemberSaving.value = false
   }
 }
 
 const handleMemberExport = async () => {
-  if (!memberGroupId.value) return
+  const groupId = memberGroupId.value
+  const groupName = memberGroupName.value
+  if (!groupId) return
   try {
-    const blob = await teacherApi.exportGroupMembers(memberGroupId.value)
-    downloadBlob(blob, `${memberGroupName.value}-成员.xlsx`)
+    const blob = await teacherApi.exportGroupMembers(groupId)
+    downloadBlob(blob, `${groupName}-成员.xlsx`)
   } catch {
     ElMessage.error('导出失败')
   }
@@ -157,11 +184,13 @@ const handleMemberImport = async () => {
   input.accept = '.xlsx,.xls,.csv'
   input.onchange = async () => {
     const file = input.files?.[0]
-    if (!file) return
+    const groupId = memberGroupId.value
+    if (!file || !groupId) return
     try {
-      await teacherApi.importGroupMembers(memberGroupId.value!, file)
+      await teacherApi.importGroupMembers(groupId, file)
+      if (memberGroupId.value !== groupId) return
       ElMessage.success('导入成功')
-      await fetchMembers()
+      await fetchMembers(groupId)
       await fetchGroups()
     } catch {
       ElMessage.error('导入失败')

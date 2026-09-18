@@ -144,7 +144,7 @@ const handleTemplateExport = async () => {
 const handleBatchImport = () => {
   const input = document.createElement('input')
   input.type = 'file'
-  input.accept = '.xlsx,.xls,.csv'
+  input.accept = '.xlsx'
   input.onchange = async () => {
     const file = input.files?.[0]
     if (!file) return

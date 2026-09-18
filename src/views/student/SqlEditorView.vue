@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElNotification } from 'element-plus'
 import { ArrowLeft, ArrowRight, Document, MagicStick, Operation, RefreshRight, Upload, VideoPlay } from '@element-plus/icons-vue'
@@ -8,6 +8,7 @@ import StatusTag from '@/components/ui/StatusTag.vue'
 import { aiApi, problemApi, submissionApi } from '@/api'
 import { useProblemStore } from '@/stores/problem'
 import type { Problem, Submission } from '@/types'
+import { isAbortError, isCurrentSession, sessionSnapshot } from '@/utils/session'
 
 type SchemaTable = {
   name: string
@@ -34,12 +35,18 @@ const problemStore = useProblemStore()
 const problem = ref<Problem | null>(null)
 const DEFAULT_SQL = 'SELECT s.name, c.course, c.score\nFROM student s\nJOIN score c ON s.id = c.student_id\nWHERE c.score >= 80;'
 const DRAFT_PREFIX = 'sql-draft:'
+const editorRef = ref<{ executeEdits: (value: string) => void } | null>(null)
+let problemGeneration = 0
+let problemAbortController: AbortController | null = null
+const currentRequest = () => ({ generation: problemGeneration, problemId: problem.value?.id ?? null, session: sessionSnapshot() })
+const isCurrentRequest = (snapshot: ReturnType<typeof currentRequest>) => snapshot.generation === problemGeneration && snapshot.problemId === problem.value?.id && isCurrentSession(snapshot.session)
 const sql = ref(DEFAULT_SQL)
 // 标记“正在程序化加载题目”，期间 sql 变化不触发草稿自动保存，避免切题瞬间用默认值覆盖草稿。
 let restoringDraft = false
 
 function draftKey(problemId: number) {
-  return `${DRAFT_PREFIX}${problemId}`
+  const userId = sessionSnapshot().userId
+  return `${DRAFT_PREFIX}${userId ?? 'anonymous'}:${problemId}`
 }
 function loadDraft(problemId: number): string | null {
   try {
@@ -104,17 +111,20 @@ const statusTone = computed(() => {
 
 const submit = async () => {
   if (!problem.value) return
+  const request = currentRequest()
   judging.value = true
   suggestion.value = ''
   runResult.value = null
   activeBottomTab.value = 'result'
   try {
     result.value = await problemApi.submit(problem.value.id, sql.value)
+    if (!isCurrentRequest(request)) return
     if (result.value.status === 'PENDING') {
       ElNotification.info({ title: '判题中', message: '提交已进入队列，正在等待结果。' })
-      result.value = await pollSubmission(result.value.id)
+      result.value = await pollSubmission(result.value.id, request)
+      if (!isCurrentRequest(request)) return
     }
-    await loadMySubmissions()
+    await loadMySubmissions(request)
     ElMessage.success('判题完成')
   } finally {
     judging.value = false
@@ -123,6 +133,7 @@ const submit = async () => {
 
 const requestAiSuggestion = async () => {
   if (!problem.value || !result.value) return
+  const request = currentRequest()
   aiLoading.value = true
   activeBottomTab.value = 'result'
   try {
@@ -133,29 +144,33 @@ const requestAiSuggestion = async () => {
       errorMessage: result.value.message,
       studentSql: sql.value
     })
+    if (!isCurrentRequest(request)) return
     suggestion.value = response.suggestion
-    await loadAiHistory()
+    await loadAiHistory(request)
   } finally {
     aiLoading.value = false
   }
 }
 
-const pollSubmission = async (submissionId: number) => {
+const pollSubmission = async (submissionId: number, request = currentRequest()) => {
   const terminalStatuses = [
     'ACCEPTED', 'WRONG_ANSWER', 'TIME_LIMIT', 'TIME_LIMIT_EXCEEDED',
     'RESULT_LIMIT_EXCEEDED', 'SYSTEM_BUSY', 'RUNTIME_ERROR', 'WA', 'TLE', 'RE'
   ]
   for (let index = 0; index < 20; index += 1) {
     const latest = await submissionApi.get(submissionId)
+    if (!isCurrentRequest(request)) return latest
     if (terminalStatuses.includes(latest.status)) {
       return latest
     }
     await new Promise((resolve) => window.setTimeout(resolve, 1500))
   }
-  return submissionApi.get(submissionId)
+  const latest = await submissionApi.get(submissionId)
+  return isCurrentRequest(request) ? latest : latest
 }
 
 const formatSql = () => {
+  if (loadingProblem.value) return
   const formatted = formatSqlText(sql.value)
   if (!formatted) {
     ElMessage.warning('请先编写 SQL')
@@ -165,7 +180,7 @@ const formatSql = () => {
     ElMessage.info('SQL 已是规范格式')
     return
   }
-  sql.value = formatted
+  editorRef.value?.executeEdits(formatted)
   ElMessage.success('已格式化 SQL')
 }
 
@@ -174,6 +189,7 @@ const runOnly = async () => {
     ElMessage.warning('请先编写 SQL')
     return
   }
+  const request = currentRequest()
   running.value = true
   result.value = null
   runResult.value = null
@@ -181,6 +197,7 @@ const runOnly = async () => {
   activeBottomTab.value = 'result'
   try {
     runResult.value = await problemApi.run(problem.value.id, sql.value)
+    if (!isCurrentRequest(request)) return
     if (runResult.value.match) {
       ElMessage.success('试运行通过，结果与参考答案一致')
     } else if (runResult.value.status === 'ACCEPTED' || runResult.value.status === 'WRONG_ANSWER') {
@@ -188,8 +205,8 @@ const runOnly = async () => {
     } else {
       ElMessage.error(runResult.value.message || '试运行未通过')
     }
-  } catch {
-    ElMessage.error('试运行失败，请稍后重试')
+  } catch (error) {
+    if (!isAbortError(error) && isCurrentRequest(request)) ElMessage.error('试运行失败，请稍后重试')
   } finally {
     running.value = false
   }
@@ -204,15 +221,22 @@ const resetSql = () => {
   ElMessage.info('已重置为初始 SQL')
 }
 
-const loadMySubmissions = async () => {
+const loadMySubmissions = async (request?: ReturnType<typeof currentRequest>) => {
   if (!problem.value) return
+  const problemId = problem.value.id
   const all = await submissionApi.mine()
-  mySubmissions.value = all.filter((s) => s.problemId === problem.value!.id)
+  if (request && !isCurrentRequest(request)) return
+  if (problem.value?.id !== problemId) return
+  mySubmissions.value = all.filter((s) => s.problemId === problemId)
 }
 
-const loadAiHistory = async () => {
+const loadAiHistory = async (request?: ReturnType<typeof currentRequest>) => {
   if (!problem.value) return
-  aiHistory.value = await aiApi.history(problem.value.id)
+  const problemId = problem.value.id
+  const history = await aiApi.history(problemId)
+  if (request && !isCurrentRequest(request)) return
+  if (problem.value?.id !== problemId) return
+  aiHistory.value = history
 }
 
 const goBack = () => {
@@ -235,21 +259,28 @@ const resetProblemState = () => {
 }
 
 const loadProblem = async (id: number) => {
-  // 切题前先把当前题目的编辑内容存为草稿，避免离开后丢失。
-  if (problem.value && !restoringDraft) {
-    saveDraft(problem.value.id, sql.value)
-  }
+  if (problem.value && !restoringDraft) saveDraft(problem.value.id, sql.value)
+  const generation = ++problemGeneration
+  problemAbortController?.abort()
+  problemAbortController = new AbortController()
+  const session = sessionSnapshot()
   loadingProblem.value = true
   restoringDraft = true
   resetProblemState()
-  // 恢复目标题目的草稿；没有草稿则用默认模板。
-  sql.value = loadDraft(id) ?? DEFAULT_SQL
   try {
-    problem.value = await problemApi.detail(id)
-    await Promise.all([loadMySubmissions(), loadAiHistory()])
+    const detail = await problemApi.detail(id)
+    if (generation !== problemGeneration || !isCurrentSession(session)) return
+    problem.value = detail
+    sql.value = loadDraft(id) ?? DEFAULT_SQL
+    const request = currentRequest()
+    await Promise.all([loadMySubmissions(request), loadAiHistory(request)])
+  } catch (error) {
+    if (!isAbortError(error) && generation === problemGeneration) throw error
   } finally {
-    loadingProblem.value = false
-    restoringDraft = false
+    if (generation === problemGeneration) {
+      loadingProblem.value = false
+      restoringDraft = false
+    }
   }
 }
 
@@ -275,46 +306,118 @@ const NEWLINE_KEYWORDS = ['FROM', 'WHERE', 'GROUP BY', 'ORDER BY', 'HAVING', 'LI
 
 function formatSqlText(raw: string): string {
   if (!raw || !raw.trim()) return ''
-  // 1. 提取并占位字符串字面量，避免内部内容被改写。
-  const literals: string[] = []
-  let work = raw.replace(/'(?:[^'\\]|\\.|'')*'/g, (m) => {
-    literals.push(m)
-    return `@@LIT${literals.length - 1}@@`
-  })
-  // 2. 压缩空白。
-  work = work.replace(/\s+/g, ' ').trim().replace(/\s*([,();])\s*/g, '$1 ').trim()
-  // 3. 关键字统一大写（按长度降序，先匹配多词关键字）。
-  ;[...SQL_KEYWORDS].sort((a, b) => b.length - a.length).forEach((kw) => {
-    const pattern = new RegExp(`\\b${kw.replace(/ /g, '\\s+')}\\b`, 'gi')
-    work = work.replace(pattern, kw)
-  })
-  // 4. 子句关键字前换行。
-  NEWLINE_KEYWORDS.sort((a, b) => b.length - a.length).forEach((kw) => {
-    const pattern = new RegExp(`\\s*\\b${kw.replace(/ /g, '\\s+')}\\b`, 'g')
-    work = work.replace(pattern, `\n${kw}`)
-  })
-  // 4b. JOIN（含 LEFT/RIGHT/INNER/FULL/CROSS [OUTER]）整体前换行。
-  work = work.replace(/\s*\b((?:LEFT|RIGHT|INNER|FULL|CROSS)(?:\s+OUTER)?\s+)?JOIN\b/g,
-    (_, prefix) => `\n${(prefix || '').trim()}${prefix ? ' ' : ''}JOIN`)
-  // 5. SELECT 字段、AND/OR 缩进换行。
-  work = work.replace(/\bSELECT\b\s*/g, 'SELECT\n  ')
-  work = work.replace(/\s*,\s*/g, ',\n  ')
-  work = work.replace(/\s*\b(AND|OR)\b\s*/g, '\n  $1 ')
-  // 6. 行内整理（保留行首缩进）+ 结尾分号。
-  let result = work
-    .split('\n')
-    .map((line) => {
-      const indent = line.match(/^\s*/)?.[0] ?? ''
-      const body = line.slice(indent.length).replace(/\s+/g, ' ').replace(/\s*;\s*$/, '').trimEnd()
-      return indent + body
-    })
-    .filter((line, idx, arr) => line.trim() !== '' || idx === arr.length - 1)
-    .join('\n')
-    .trim()
-  if (!result.endsWith(';')) result += ';'
-  // 7. 还原字符串字面量。
-  result = result.replace(/@@LIT(\d+)@@/g, (_, i) => literals[Number(i)])
-  return result
+  try {
+    type Token = { raw: string; protected: boolean }
+    const tokens: Token[] = []
+    let code = ''
+    const flushCode = () => {
+      if (code) tokens.push({ raw: code, protected: false })
+      code = ''
+    }
+    const protectedToken = (start: number, end: number) => {
+      flushCode()
+      tokens.push({ raw: raw.slice(start, end), protected: true })
+    }
+    let index = 0
+    while (index < raw.length) {
+      const start = index
+      const char = raw[index]
+      if (char === "'" || char === '"' || char === '\u0060') {
+        const quote = char
+        index += 1
+        let closed = false
+        while (index < raw.length) {
+          if (raw[index] === '\\') {
+            index += 2
+            continue
+          }
+          if (raw[index] === quote) {
+            if (raw[index + 1] === quote) {
+              index += 2
+              continue
+            }
+            index += 1
+            closed = true
+            break
+          }
+          index += 1
+        }
+        if (!closed) return raw
+        protectedToken(start, index)
+        continue
+      }
+      if (char === '-' && raw[index + 1] === '-') {
+        index += 2
+        while (index < raw.length && raw[index] !== '\n' && raw[index] !== '\r') index += 1
+        protectedToken(start, index)
+        continue
+      }
+      if (char === '#') {
+        index += 1
+        while (index < raw.length && raw[index] !== '\n' && raw[index] !== '\r') index += 1
+        protectedToken(start, index)
+        continue
+      }
+      if (char === '/' && raw[index + 1] === '*') {
+        index += 2
+        let closed = false
+        while (index < raw.length) {
+          if (raw[index] === '*' && raw[index + 1] === '/') {
+            index += 2
+            closed = true
+            break
+          }
+          index += 1
+        }
+        if (!closed) return raw
+        protectedToken(start, index)
+        continue
+      }
+      code += char
+      index += 1
+    }
+    flushCode()
+
+    const formatCode = (segment: string) => {
+      const parts: string[] = []
+      let word = ''
+      const flushWord = () => {
+        if (!word) return
+        const upper = word.toUpperCase()
+        parts.push(SQL_KEYWORDS.includes(upper) || NEWLINE_KEYWORDS.includes(upper) ? upper : word)
+        word = ''
+      }
+      for (let i = 0; i < segment.length; i += 1) {
+        const char = segment[i]
+        if ((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char === '_' || char === '$') {
+          word += char
+          continue
+        }
+        flushWord()
+        if (char === ',' || char === '(' || char === ')' || char === ';') {
+          while (parts.length && parts[parts.length - 1] === ' ') parts.pop()
+          parts.push(char)
+          if (char === ',') parts.push(' ')
+        } else if (char === '\r' || char === '\n' || char === '\t' || char === ' ') {
+          if (parts.length && parts[parts.length - 1] !== ' ') parts.push(' ')
+        } else {
+          while (parts.length && parts[parts.length - 1] === ' ') parts.pop()
+          parts.push(char)
+          parts.push(' ')
+        }
+      }
+      flushWord()
+      return parts.join('').replace(/^ +| +$/g, '')
+    }
+    let result = ''
+    for (const token of tokens) result += token.protected ? token.raw : formatCode(token.raw)
+    result = result.replace(/[ ]{2,}/g, ' ').trim()
+    if (!result) return ''
+    if (!result.endsWith(';')) result += ';'
+    return result
+  } catch {
+    return raw
+  }
 }
 
 function normalizeCaseText(value: string) {
@@ -386,9 +489,12 @@ watch(
 
 // 编辑内容变化时自动保存为当前题目的草稿（加载/恢复阶段除外）。
 watch(sql, (value) => {
-  if (!restoringDraft && problem.value) {
-    saveDraft(problem.value.id, value)
-  }
+  if (!restoringDraft && problem.value) saveDraft(problem.value.id, value)
+})
+
+onBeforeUnmount(() => {
+  problemGeneration += 1
+  problemAbortController?.abort()
 })
 </script>
 
@@ -424,8 +530,8 @@ watch(sql, (value) => {
           </el-button>
         </div>
         <el-button class="ghost-action" :icon="RefreshRight" text @click="resetSql">重置</el-button>
-        <el-button class="run-button" :icon="VideoPlay" :loading="running" :disabled="judging" @click="runOnly">运行</el-button>
-        <el-button class="submit-button" :icon="Upload" :loading="judging" @click="submit">提交</el-button>
+        <el-button class="run-button" :icon="VideoPlay" :loading="running" :disabled="judging || loadingProblem" @click="runOnly">运行</el-button>
+        <el-button class="submit-button" :icon="Upload" :loading="judging" :disabled="loadingProblem" @click="submit">提交</el-button>
       </div>
     </header>
 
@@ -534,7 +640,7 @@ watch(sql, (value) => {
               <el-button size="small" text @click="formatSql">格式化</el-button>
             </div>
           </div>
-          <SqlMonacoEditor v-model="sql" height="100%" />
+          <SqlMonacoEditor ref="editorRef" v-model="sql" height="100%" />
         </div>
 
         <div class="bottom-panel">

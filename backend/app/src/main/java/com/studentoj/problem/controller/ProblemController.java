@@ -28,16 +28,19 @@ public class ProblemController {
     }
 
     @GetMapping("/api/problem/list")
+    @RequireRole(Role.STUDENT)
     public List<ProblemResponse> list() {
         return problemService.list(AuthContext.userId());
     }
 
     @GetMapping("/api/problem/{id}")
+    @RequireRole(Role.STUDENT)
     public ProblemResponse detail(@PathVariable("id") Long id) {
         return problemService.detail(id, AuthContext.userId());
     }
 
     @GetMapping("/api/sql-problems/{id}")
+    @RequireRole(Role.STUDENT)
     public ProblemResponse sqlProblemDetail(@PathVariable("id") Long id) {
         return problemService.detail(id, AuthContext.userId());
     }
@@ -45,7 +48,7 @@ public class ProblemController {
     @PostMapping("/api/submission/judge")
     @RequireRole(Role.STUDENT)
     public SubmissionResponse submit(@RequestBody SubmissionRequest request) {
-        return problemService.submit(new SubmissionRequest(AuthContext.userId(), request.problemId(), request.sqlContent()));
+        return problemService.submit(new SubmissionRequest(request.problemId(), request.sqlContent()), AuthContext.userId());
     }
 
     @PostMapping("/api/sql-judge/submit")

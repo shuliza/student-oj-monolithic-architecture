@@ -22,6 +22,9 @@ const selectedGroup = ref('')
 const selectedStudentId = ref<number | ''>('')
 const todaySolvedList = ref<StudentTodaySolved[]>([])
 const rejudgingId = ref<number | null>(null)
+let scopedRequestGeneration = 0
+let studentsRequestGeneration = 0
+let groupsRequestGeneration = 0
 
 const groupOptions = computed(() => {
   const names = new Set<string>()
@@ -105,43 +108,48 @@ watch(selectedStudentId, async () => {
 })
 
 onMounted(async () => {
-  const [studentList, groupList] = await Promise.all([
-    teacherApi.students(),
-    teacherApi.groups(),
-    loadScopedData()
-  ])
-  students.value = studentList
-  groups.value = groupList
+  const studentGeneration = ++studentsRequestGeneration
+  const groupGeneration = ++groupsRequestGeneration
+  const [studentResult, groupResult] = await Promise.all([teacherApi.students(), teacherApi.groups()])
+  if (studentGeneration === studentsRequestGeneration) students.value = studentResult
+  if (groupGeneration === groupsRequestGeneration) groups.value = groupResult
+  await loadScopedData()
 })
 
 async function loadScopedData() {
-  const params = selectedGroup.value
-    ? {
-        groupName: selectedGroup.value,
-        studentId: selectedStudentId.value === '' ? undefined : selectedStudentId.value
-      }
+  const generation = ++scopedRequestGeneration
+  const groupName = selectedGroup.value
+  const studentId = selectedStudentId.value
+  const params = groupName
+    ? { groupName, studentId: studentId === '' ? undefined : studentId }
     : undefined
 
-  await Promise.all([
-    statisticsStore.fetchOverview(params),
-    statisticsStore.fetchActivity(params),
-    problemStore.fetchSubmissions(params),
-    statisticsApi.teacherTodaySolved(params).then((data) => {
-      todaySolvedList.value = data
-    })
+  const [overview, activity, submissions, todaySolved] = await Promise.all([
+    statisticsApi.teacherOverview(params),
+    statisticsApi.teacherActivity(params),
+    submissionApi.list(params),
+    statisticsApi.teacherTodaySolved(params)
   ])
+  if (generation === scopedRequestGeneration && selectedGroup.value === groupName && selectedStudentId.value === studentId) {
+    statisticsStore.overview = overview
+    statisticsStore.activity = activity
+    problemStore.submissions = submissions
+    todaySolvedList.value = todaySolved
+  }
 }
 
 async function rejudge(row: { id: number }) {
-  rejudgingId.value = row.id
+  const id = row.id
+  rejudgingId.value = id
   try {
-    const result = await submissionApi.rejudge(row.id)
+    const result = await submissionApi.rejudge(id)
+    if (rejudgingId.value !== id) return
     ElMessage.success(`重判完成：${result.status}`)
     await loadScopedData()
   } catch {
     // 错误信息由 http 拦截器统一提示
   } finally {
-    rejudgingId.value = null
+    if (rejudgingId.value === id) rejudgingId.value = null
   }
 }
 </script>

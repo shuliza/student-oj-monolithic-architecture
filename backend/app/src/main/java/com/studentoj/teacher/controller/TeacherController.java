@@ -107,11 +107,13 @@ public class TeacherController {
                 .body(bytes);
     }
 
-    @GetMapping(value = "/grades/export/student/{studentId}", produces = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    public ResponseEntity<byte[]> exportStudentGrades(@PathVariable("studentId") Long studentId) {
-        byte[] bytes = teacherService.exportStudentGrades(studentId);
-        return ResponseEntity.ok()
-                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=student-grades.xlsx")
+    @GetMapping(value = "/grades/export/student/{studentId}")
+    public ResponseEntity<byte[]> exportStudentGrades(@PathVariable("studentId") Long studentId, @RequestParam(defaultValue = "xlsx") String format) {
+        byte[] bytes = teacherService.exportStudentGrades(studentId, format);
+        boolean csv = TeacherService.isCsv(format);
+        MediaType contentType = csv ? new MediaType("text", "csv", java.nio.charset.StandardCharsets.UTF_8) : MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        return ResponseEntity.ok().contentType(contentType)
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=student-grades." + (csv ? "csv" : "xlsx"))
                 .body(bytes);
     }
 
@@ -155,8 +157,7 @@ public class TeacherController {
 
     @PostMapping("/students/import")
     public Map<String, Object> importStudents(@RequestParam("file") MultipartFile file) {
-        int count = teacherService.importStudents(file);
-        return Map.of("imported", count);
+        return teacherService.importStudents(file);
     }
 
     @GetMapping(value = "/groups/{id}/members/export", produces = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -169,7 +170,6 @@ public class TeacherController {
 
     @PostMapping("/groups/{id}/members/import")
     public Map<String, Object> importGroupMembers(@PathVariable("id") Long id, @RequestParam("file") MultipartFile file) {
-        int count = teacherService.importGroupMembers(id, file);
-        return Map.of("imported", count);
+        return teacherService.importGroupMembers(id, file);
     }
 }

@@ -9,6 +9,8 @@ const problems = ref<ProblemAdmin[]>([])
 const keyword = ref('')
 const loading = ref(false)
 const importing = ref(false)
+let problemsRequestGeneration = 0
+let editingRequestGeneration = 0
 
 const dialogVisible = ref(false)
 const dialogTitle = ref('新增题目')
@@ -34,15 +36,18 @@ const list = computed(() =>
 )
 
 const fetchProblems = async () => {
+  const generation = ++problemsRequestGeneration
   loading.value = true
   try {
-    problems.value = await problemAdminApi.list()
+    const result = await problemAdminApi.list()
+    if (generation === problemsRequestGeneration) problems.value = result
   } finally {
-    loading.value = false
+    if (generation === problemsRequestGeneration) loading.value = false
   }
 }
 
 const openCreateDialog = () => {
+  ++editingRequestGeneration
   dialogTitle.value = '新增题目'
   editingId.value = null
   form.value = emptyForm()
@@ -51,9 +56,12 @@ const openCreateDialog = () => {
 }
 
 const openEditDialog = async (row: ProblemAdmin) => {
+  const id = row.id
+  const generation = ++editingRequestGeneration
   dialogTitle.value = '编辑题目'
-  editingId.value = row.id
-  const detail = await problemAdminApi.detail(row.id)
+  editingId.value = id
+  const detail = await problemAdminApi.detail(id)
+  if (generation !== editingRequestGeneration || editingId.value !== id) return
   form.value = {
     title: detail.title,
     difficulty: detail.difficulty,
@@ -96,25 +104,31 @@ const submitForm = async () => {
     return
   }
   saving.value = true
+  const id = editingId.value
+  const generation = editingRequestGeneration
+  const payload = { ...form.value, tags: [...form.value.tags], testcases: [...form.value.testcases] }
   try {
-    if (editingId.value) {
-      await problemAdminApi.update(editingId.value, form.value)
+    if (id) {
+      await problemAdminApi.update(id, payload)
+      if (generation !== editingRequestGeneration || editingId.value !== id) return
       ElMessage.success('题目已更新')
     } else {
-      await problemAdminApi.create(form.value)
+      await problemAdminApi.create(payload)
+      if (generation !== editingRequestGeneration || editingId.value !== null) return
       ElMessage.success('题目已创建')
     }
     dialogVisible.value = false
     await fetchProblems()
   } finally {
-    saving.value = false
+    if (generation === editingRequestGeneration) saving.value = false
   }
 }
 
 const deleteProblem = async (row: ProblemAdmin) => {
+  const id = row.id
   try {
     await ElMessageBox.confirm(`确认删除题目「${row.title}」？删除后学生端将不可见。`, '删除确认', { type: 'warning' })
-    await problemAdminApi.remove(row.id)
+    await problemAdminApi.remove(id)
     ElMessage.success('题目已删除')
     await fetchProblems()
   } catch {}

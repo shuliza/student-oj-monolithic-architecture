@@ -17,6 +17,7 @@ public class UserEntity {
     private String studentNo;
     private Long groupId;
     private String status;
+    private Integer sessionVersion;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
@@ -38,6 +39,8 @@ public class UserEntity {
     public void setGroupId(Long groupId) { this.groupId = groupId; }
     public String getStatus() { return status; }
     public void setStatus(String status) { this.status = status; }
+    public Integer getSessionVersion() { return sessionVersion; }
+    public void setSessionVersion(Integer sessionVersion) { this.sessionVersion = sessionVersion; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }

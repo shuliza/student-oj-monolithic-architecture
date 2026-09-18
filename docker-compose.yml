@@ -9,7 +9,8 @@ services:
       - mysql-data:/var/lib/mysql
       - ./deploy/mysql/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
       - ./deploy/mysql/02-problems.sql:/docker-entrypoint-initdb.d/02-problems.sql:ro
-      - ./deploy/mysql/session-version-upgrade.sql:/docker-entrypoint-initdb.d/03-session-version-upgrade.sql:ro
+      - ./deploy/mysql/03-enable-problems.sql:/docker-entrypoint-initdb.d/03-enable-problems.sql:ro
+      - ./deploy/mysql/session-version-upgrade.sql:/docker-entrypoint-initdb.d/04-session-version-upgrade.sql:ro
     command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_ai_ci", "--max-connections=300"]
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
